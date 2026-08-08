@@ -1,0 +1,249 @@
+import type { Request, Response } from 'express';
+import { z } from 'zod';
+
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+
+import type { AppConfig } from '../config.js';
+import type { LibreChatStore } from '../librechat/mongo.js';
+import { logger } from '../logger.js';
+import type { MemoryService } from '../memory/service.js';
+
+/**
+ * The explicit half of the integration.
+ *
+ * The proxy handles the automatic path. These tools exist for the times the
+ * automatic path is not enough: searching memory mid-answer, correcting
+ * something that was recorded wrong, or deliberately writing a note the
+ * extractor would not have picked up.
+ *
+ * Stateless by design: one server and transport per request, with project
+ * context taken from the same headers the proxy uses. That keeps it compatible
+ * with LibreChat's request-scoped MCP connections.
+ */
+
+export const SERVER_INSTRUCTIONS = `This server exposes the user's long-term memory vault (mnemonic), scoped to the current LibreChat project.
+
+Relevant memories are already injected into your context automatically. Use these tools when that is not enough:
+- search_memory when the user refers to something from a past conversation that is not in your context.
+- save_memory when the user asks you to remember something specific, or states a durable decision worth keeping.
+- update_memory or forget_memory when the user corrects or retracts something previously stored.
+
+Do not call save_memory for routine conversation. Automatic extraction already handles the ordinary case, and duplicate notes make recall worse.`;
+
+export interface McpDeps {
+  config: AppConfig;
+  store: LibreChatStore;
+  memory: MemoryService;
+}
+
+function buildServer(deps: McpDeps, userId: string | null, conversationId: string | null): McpServer {
+  const { config, store, memory } = deps;
+
+  const server = new McpServer(
+    { name: 'librechat-mnemonic', version: '0.1.0' },
+    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
+  );
+
+  const context = () => memory.resolveContext(userId, conversationId);
+
+  server.registerTool(
+    'search_memory',
+    {
+      title: 'Search memory',
+      description:
+        'Semantic search over the memory vault, scoped to the current project plus global notes. Use when the user refers to earlier context you do not have.',
+      inputSchema: {
+        query: z.string().describe('Natural-language description of what you are looking for.'),
+        limit: z.number().int().min(1).max(20).optional(),
+        scope: z
+          .enum(['project', 'global', 'all'])
+          .optional()
+          .describe('Defaults to the server setting; "project" restricts to this chat project.'),
+      },
+    },
+    async ({ query, limit, scope }) => {
+      const ctx = await context();
+      const results = await memory.recall(ctx, query, { limit, scope });
+      if (results.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No matching memories.' }] };
+      }
+      const text = results
+        .map((result) =>
+          [
+            `## ${result.title}`,
+            `id: ${result.id}${result.project?.name ? ` · project: ${result.project.name}` : ''}`,
+            '',
+            result.content.trim(),
+          ].join('\n'),
+        )
+        .join('\n\n---\n\n');
+      return { content: [{ type: 'text' as const, text }] };
+    },
+  );
+
+  server.registerTool(
+    'save_memory',
+    {
+      title: 'Save memory',
+      description:
+        'Store a durable note in the memory vault, stamped with the current project. Duplicates are detected and skipped.',
+      inputSchema: {
+        title: z.string().max(200).describe('Specific, retrieval-friendly title.'),
+        content: z
+          .string()
+          .max(8000)
+          .describe('Markdown body. Put the key fact in the first sentence.'),
+        tags: z.array(z.string()).max(6).optional(),
+        lifecycle: z.enum(['temporary', 'permanent']).optional(),
+      },
+    },
+    async ({ title, content, tags, lifecycle }) => {
+      const ctx = await context();
+      const result = await memory.save(ctx, { title, content, tags, lifecycle });
+      const text = result.saved
+        ? `Saved as ${result.id}.`
+        : result.reason === 'duplicate'
+          ? `Not saved: an equivalent memory already exists (${result.id}).`
+          : `Not saved: ${result.reason ?? 'unknown error'}.`;
+      return { content: [{ type: 'text' as const, text }], isError: !result.saved && result.reason === 'error' };
+    },
+  );
+
+  server.registerTool(
+    'update_memory',
+    {
+      title: 'Update memory',
+      description: 'Correct an existing memory in place. Prefer this over saving a near-duplicate.',
+      inputSchema: {
+        id: z.string(),
+        title: z.string().max(200).optional(),
+        content: z.string().max(8000).optional(),
+        tags: z.array(z.string()).max(6).optional(),
+      },
+    },
+    async ({ id, title, content, tags }) => {
+      const ctx = await context();
+      const ok = await memory.update(ctx, id, { title, content, tags });
+      return {
+        content: [{ type: 'text' as const, text: ok ? `Updated ${id}.` : `Could not update ${id}.` }],
+        isError: !ok,
+      };
+    },
+  );
+
+  server.registerTool(
+    'forget_memory',
+    {
+      title: 'Forget memory',
+      description: 'Delete a memory by id. Use when the user retracts something.',
+      inputSchema: { id: z.string() },
+    },
+    async ({ id }) => {
+      const ctx = await context();
+      const ok = await memory.forget(ctx, id);
+      return {
+        content: [{ type: 'text' as const, text: ok ? `Forgot ${id}.` : `Could not forget ${id}.` }],
+        isError: !ok,
+      };
+    },
+  );
+
+  server.registerTool(
+    'memory_status',
+    {
+      title: 'Memory status',
+      description:
+        'Report whether automatic memory is on for this chat and which project it is scoped to.',
+      inputSchema: {},
+    },
+    async () => {
+      const ctx = await context();
+      const setting = await store.getMemorySetting(userId, conversationId);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: [
+              `Automatic memory: ${setting.enabled ? 'on' : 'off'} (${setting.source})`,
+              `Project: ${ctx.projectName ?? 'none'}`,
+              `Write scope: ${config.mnemonic.writeScope}, recall scope: ${config.mnemonic.recallScope}`,
+            ].join('\n'),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    'set_memory_enabled',
+    {
+      title: 'Enable or disable memory for this chat',
+      description:
+        'Turn automatic recall and saving on or off for the current conversation only. Call when the user asks you to stop or start remembering here.',
+      inputSchema: { enabled: z.boolean() },
+    },
+    async ({ enabled }) => {
+      if (!conversationId) {
+        return {
+          content: [{ type: 'text' as const, text: 'No conversation id available.' }],
+          isError: true,
+        };
+      }
+      await store.setConversationMemory(conversationId, userId, enabled);
+      return {
+        content: [
+          { type: 'text' as const, text: `Automatic memory is now ${enabled ? 'on' : 'off'} for this chat.` },
+        ],
+      };
+    },
+  );
+
+  return server;
+}
+
+export function createMcpHandler(deps: McpDeps) {
+  return async function handle(req: Request, res: Response): Promise<void> {
+    const userHeader = req.headers[deps.config.librechat.userHeader];
+    const conversationHeader = req.headers[deps.config.librechat.conversationHeader];
+    const userId = firstHeader(userHeader);
+    const conversationId = firstHeader(conversationHeader);
+
+    const server = buildServer(deps, userId, conversationId);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+
+    res.on('close', () => {
+      void transport.close().catch(() => undefined);
+      void server.close().catch(() => undefined);
+    });
+
+    try {
+      await server.connect(transport);
+      const body = Buffer.isBuffer(req.body) ? safeJson(req.body) : req.body;
+      await transport.handleRequest(req, res, body);
+    } catch (error) {
+      logger.error({ err: error }, 'mcp request failed');
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null,
+        });
+      }
+    }
+  };
+}
+
+function firstHeader(value: string | string[] | undefined): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const trimmed = typeof raw === 'string' ? raw.trim() : '';
+  return trimmed ? trimmed : null;
+}
+
+function safeJson(buffer: Buffer): unknown {
+  try {
+    return JSON.parse(buffer.toString('utf8'));
+  } catch {
+    return undefined;
+  }
+}
