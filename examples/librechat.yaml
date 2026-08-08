@@ -1,0 +1,84 @@
+version: 1.3.0
+
+# LibreChat configuration for librechat-mnemonic.
+#
+# Two independent halves. You can adopt either or both.
+#
+#   1. endpoints.custom: routes model traffic through the proxy. This is the
+#      automatic path: recall is injected before every call and memories are
+#      written after. Nothing depends on the model choosing to cooperate.
+#
+#   2. mcpServers: exposes explicit memory tools to agents, for searching and
+#      correcting memory mid-conversation.
+
+endpoints:
+  custom:
+    # ── OpenAI, through the proxy ───────────────────────────────────────────
+    - name: 'OpenAI'
+      apiKey: '${OPENAI_API_KEY}'
+      # Points at the proxy, not at OpenAI. The `openai` segment selects the
+      # upstream by the name you gave it in UPSTREAMS.
+      baseURL: 'http://librechat-mnemonic:8710/openai/v1'
+      models:
+        default: ['gpt-4o', 'gpt-4o-mini']
+        fetch: false
+      titleConvo: true
+      titleModel: 'gpt-4o-mini'
+      # These two headers are the whole integration. Without them the proxy
+      # cannot tell which user or which project a request belongs to, and it
+      # falls back to plain passthrough.
+      headers:
+        x-librechat-user-id: '{{LIBRECHAT_USER_ID}}'
+        x-librechat-conversation-id: '{{LIBRECHAT_BODY_CONVERSATIONID}}'
+
+    # ── Anthropic, through the proxy ────────────────────────────────────────
+    # `provider: anthropic` uses the native Messages API. baseURL is the API
+    # root; LibreChat appends /v1/messages itself.
+    - name: 'Claude'
+      apiKey: '${ANTHROPIC_API_KEY}'
+      baseURL: 'http://librechat-mnemonic:8710/anthropic'
+      provider: 'anthropic'
+      iconURL: 'anthropic'
+      models:
+        default: ['claude-sonnet-4-5-20250929', 'claude-opus-4-1-20250805']
+      titleConvo: true
+      headers:
+        x-librechat-user-id: '{{LIBRECHAT_USER_ID}}'
+        x-librechat-conversation-id: '{{LIBRECHAT_BODY_CONVERSATIONID}}'
+
+mcpServers:
+  mnemonic:
+    type: streamable-http
+    url: 'http://librechat-mnemonic:8710/mcp'
+    title: 'Memory'
+    description: 'Search and correct long-term memory for this project.'
+    requiresOAuth: false
+    timeout: 30000
+    headers:
+      x-librechat-user-id: '{{LIBRECHAT_USER_ID}}'
+      x-librechat-conversation-id: '{{LIBRECHAT_BODY_CONVERSATIONID}}'
+    # Let the server describe itself to the agent.
+    serverInstructions: true
+
+# Internal container names must be allow-listed before LibreChat will connect
+# to them as MCP servers.
+mcpSettings:
+  allowedDomains:
+    - 'librechat-mnemonic'
+
+# Optional: pre-select the memory tools for new chats. Set a spec as the
+# default and its mcpServers list is applied to every new conversation, which
+# is how you get memory tools on by default without the user picking them.
+# The proxy path does not need this; it is on by default on its own.
+modelSpecs:
+  enforce: false
+  prioritize: true
+  list:
+    - name: 'claude-with-memory'
+      label: 'Claude (memory)'
+      default: true
+      preset:
+        endpoint: 'Claude'
+        model: 'claude-sonnet-4-5-20250929'
+      mcpServers:
+        - mnemonic

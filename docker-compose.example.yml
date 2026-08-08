@@ -1,0 +1,83 @@
+# Drop-in fragment for an existing LibreChat stack.
+#
+# The only requirement is that this service can reach the same MongoDB that
+# LibreChat uses, because that is where the conversation -> project mapping
+# lives. Nothing is written to LibreChat's own collections.
+
+services:
+  librechat-mnemonic:
+    image: ghcr.io/claudedowling/librechat-mnemonic:latest
+    # Or build from source:
+    # build: https://github.com/claudedowling/librechat-mnemonic.git
+    container_name: librechat-mnemonic
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      # ── LibreChat ─────────────────────────────────────────────────────────
+      LIBRECHAT_MONGO_URI: mongodb://mongo:27017/LibreChat
+
+      # ── Providers this proxy sits in front of ─────────────────────────────
+      # `baseUrl` is the provider root: <baseUrl>/v1/chat/completions must be
+      # valid for api=openai, and <baseUrl>/v1/messages for api=anthropic.
+      UPSTREAMS: >-
+        [
+          {"name":"openai","baseUrl":"https://api.openai.com","api":"openai"},
+          {"name":"anthropic","baseUrl":"https://api.anthropic.com","api":"anthropic"}
+        ]
+
+      # ── mnemonic ──────────────────────────────────────────────────────────
+      MNEMONIC_VAULT_PATH: /vault
+      MNEMONIC_PROJECT_ROOT: /projects
+      # Local embeddings. Point at any Ollama reachable from this container.
+      EMBED_PROVIDER: ollama
+      OLLAMA_URL: http://ollama:11434
+      EMBED_MODEL: nomic-embed-text-v2-moe
+      # Set true if the vault is not a git repo and you do not want git sync.
+      DISABLE_GIT: "false"
+
+      # ── Behaviour ─────────────────────────────────────────────────────────
+      MEMORY_DEFAULT_ENABLED: "true"
+      MEMORY_WRITE_MODE: llm
+      MNEMONIC_WRITE_SCOPE: global
+      MNEMONIC_RECALL_SCOPE: all
+
+      # A small, cheap model does the extraction. Omit to reuse the chat's own
+      # model, which works but costs more.
+      EXTRACT_BASE_URL: https://api.openai.com/v1
+      EXTRACT_MODEL: gpt-4o-mini
+      EXTRACT_API_KEY: ${OPENAI_API_KEY}
+
+      LOG_LEVEL: info
+    volumes:
+      # The vault. Point this at an existing mnemonic vault to share one memory
+      # store with your other tools, or let it start empty.
+      - mnemonic-vault:/vault
+      # One directory per LibreChat project. These give mnemonic its project
+      # identity, so the volume must persist. Keep it outside any git repo.
+      - mnemonic-projects:/projects
+    networks:
+      - librechat-network
+    # No published port: only LibreChat needs to reach it.
+    expose:
+      - "8710"
+
+  # Local embeddings for mnemonic. Skip this and set EMBED_PROVIDER=openai or
+  # gemini if you would rather not run a model locally.
+  ollama:
+    image: ollama/ollama
+    container_name: librechat-mnemonic-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - librechat-network
+
+volumes:
+  mnemonic-vault:
+  mnemonic-projects:
+  ollama-data:
+
+networks:
+  librechat-network:
+    external: true
