@@ -233,6 +233,32 @@ Worth knowing before you rely on it.
 - **Automatic extraction is a judgement call made by a model.** It will sometimes store something you would not have, and miss something you would. `MEMORY_WRITE_MODE=explicit` trades recall for precision.
 - **Tool-calling turns are passed through untouched.** Memory is injected on the request and extracted from the final text, so intermediate tool rounds are not analysed separately.
 
+## Images and releases
+
+Published to the GitHub Container Registry:
+
+```text
+ghcr.io/claudedowling/librechat-mnemonic:latest    # newest release
+ghcr.io/claudedowling/librechat-mnemonic:0.1       # newest 0.1.x
+ghcr.io/claudedowling/librechat-mnemonic:0.1.0     # exact version
+ghcr.io/claudedowling/librechat-mnemonic:main      # tip of main, unreleased
+```
+
+Built for `linux/amd64` and `linux/arm64`, with SBOM and signed build provenance. Verify a pull with:
+
+```bash
+gh attestation verify oci://ghcr.io/claudedowling/librechat-mnemonic:latest \
+  --repo claudedowling/librechat-mnemonic
+```
+
+Pin to a minor tag such as `:0.1` in production. `latest` moves across breaking changes while the project is pre-1.0.
+
+To cut a release, bump `version` in `package.json`, then tag:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
 ## Development
 
 ```bash
