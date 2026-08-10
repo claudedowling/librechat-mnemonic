@@ -22,6 +22,16 @@ const HOP_BY_HOP = new Set([
   'upgrade',
   'host',
   'content-length',
+  // `fetch` (undici) transparently decompresses gzip/br response bodies when
+  // reading `.body`/`.text()`, but does not strip the original
+  // `Content-Encoding` header from `upstreamResponse.headers`. Relaying it
+  // unchanged tells the downstream client (LibreChat) the body is still
+  // compressed, so it attempts to decompress already-decompressed bytes and
+  // fails with a zlib "incorrect header check" error. Observed against
+  // Gemini's `/v1beta/openai/models` endpoint, which gzips its response;
+  // Ollama's equivalent endpoint doesn't compress, which is why only Gemini
+  // triggered this.
+  'content-encoding',
 ]);
 
 export interface ProxyDeps {
