@@ -246,7 +246,7 @@ export function createMcpHandler(deps: McpDeps) {
 function validateMemoryInput(input: {
   title?: string;
   content?: string;
-  tags?: string[];? `Not saved: equivalent memory already exists.\n  id: ${result.id}\n  title: "${result.duplicateTitle}"\nUse update_memory to correct it, or search_memory to read it.`
+  tags?: string[];
 }): string | null {
   if (input.title != null && input.title.length > 200) {
     return `title exceeds 200 character limit (got ${input.title.length}). Shorten the title.`;
