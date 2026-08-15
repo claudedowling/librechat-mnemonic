@@ -170,7 +170,11 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
     async ({ scope, tags, limit }) => {
       const ctx = await context();
       const result = await memory.list(ctx, { scope, tags });
-      const notes = Array.isArray(result) ? result : [];
+      const notes = Array.isArray(result)
+        ? result
+        : Array.isArray((result as { notes?: unknown[] })?.notes)
+          ? (result as { notes: unknown[] }).notes
+          : [];
       const limited = limit ? notes.slice(0, limit) : notes.slice(0, 50);
       if (limited.length === 0) {
         return { content: [{ type: 'text' as const, text: 'No memories found.' }] };
