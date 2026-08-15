@@ -25,7 +25,7 @@ export function extractExplicit(userMessage: string): MemoryCandidate[] {
     const match = pattern.exec(userMessage);
     const body = match?.[1]?.trim();
     if (body) {
-      return [{ title: deriveTitle(body), content: body, lifecycle: 'permanent' }];
+      return [{ title: deriveTitle(body), content: body, lifecycle: 'permanent', role: 'context' }];
     }
   }
   return [];
@@ -39,27 +39,25 @@ export interface ModelSpec {
 }
 
 const SYSTEM_PROMPT = `You extract durable memories from a conversation for a long-term knowledge vault.
-
 Return JSON only, in this exact shape:
-{"memories":[{"title":"...","content":"...","tags":["..."],"lifecycle":"permanent"}]}
-
+{"memories":[{"title":"...","content":"...","tags":["..."],"lifecycle":"permanent","role":"context"}]}
 Store a memory only when it is worth recalling weeks from now:
 - decisions and the reasoning behind them
 - stable facts about the user, their systems, their environment or their preferences
 - solutions to problems, and things that were ruled out and why
 - commitments, deadlines and named entities that will come up again
-
 Do not store:
 - anything already obvious from the question itself
 - transient state, small talk, or the assistant's own reasoning
 - speculation, or anything the user has not confirmed
 - credentials, tokens, API keys, or other secrets
-
 Write each memory so it stands alone without the surrounding conversation.
 Put the key fact in the opening sentence. Use plain markdown, no headings.
 Titles are specific and retrieval-friendly, at most 100 characters.
 Use "temporary" lifecycle for in-flight work, "permanent" for durable knowledge.
-
+Set "role" to one of: summary, decision, plan, context, reference, research, review.
+Use "context" for background facts, "decision" for decisions, "reference" for durable specs,
+"summary" for outcomes, "plan" for plans, "research" for findings, "review" for review notes.
 Return {"memories":[]} when nothing meets the bar. That is the common case; be strict.`;
 
 export async function extractWithModel(
@@ -78,10 +76,8 @@ export async function extractWithModel(
     truncate(exchange.assistant, 6000),
     '</assistant_reply>',
   ].join('\n');
-
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.extract.timeoutMs);
-
   try {
     const raw = await callModel(spec, SYSTEM_PROMPT, userPrompt, controller.signal);
     return parseCandidates(raw, config.memory.maxPerTurn);
@@ -128,7 +124,6 @@ async function callModel(
       .map((part) => part.text as string)
       .join('');
   }
-
   const response = await fetch(`${trimSlash(spec.baseUrl)}/chat/completions`, {
     method: 'POST',
     signal,
@@ -155,24 +150,20 @@ async function callModel(
 export function parseCandidates(raw: string, max: number): MemoryCandidate[] {
   const text = raw.trim();
   if (!text) return [];
-
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
   const body = fenced?.[1]?.trim() ?? text;
-
   const start = body.indexOf('{');
   const end = body.lastIndexOf('}');
   if (start === -1 || end <= start) return [];
-
   let parsed: unknown;
   try {
     parsed = JSON.parse(body.slice(start, end + 1));
   } catch {
     return [];
   }
-
   const memories = (parsed as { memories?: unknown }).memories;
   if (!Array.isArray(memories)) return [];
-
+  const VALID_ROLES = ['summary', 'decision', 'plan', 'context', 'reference', 'research', 'review'];
   const out: MemoryCandidate[] = [];
   for (const entry of memories) {
     if (!entry || typeof entry !== 'object') continue;
@@ -180,19 +171,21 @@ export function parseCandidates(raw: string, max: number): MemoryCandidate[] {
     const title = typeof record.title === 'string' ? record.title.trim() : '';
     const content = typeof record.content === 'string' ? record.content.trim() : '';
     if (!title || !content) continue;
-
     const tags = Array.isArray(record.tags)
       ? record.tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0)
       : [];
     const lifecycle = record.lifecycle === 'temporary' ? 'temporary' : 'permanent';
-
+    const role =
+      typeof record.role === 'string' && VALID_ROLES.includes(record.role)
+        ? record.role
+        : 'context';
     out.push({
       title: title.slice(0, 120),
       content: content.slice(0, 8000),
       tags: tags.slice(0, 6).map((tag) => tag.trim()),
       lifecycle,
+      role,
     });
-
     if (out.length >= max) break;
   }
   return out;

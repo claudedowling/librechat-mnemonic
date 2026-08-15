@@ -151,7 +151,9 @@ export class MemoryService {
       scope: this.config.mnemonic.writeScope,
       checkedForExisting: true,
     };
+    
     if (candidate.lifecycle) args.lifecycle = candidate.lifecycle;
+    if (candidate.role) args.role = candidate.role;
     if (context.cwd) args.cwd = context.cwd;
 
     try {

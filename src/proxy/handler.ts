@@ -392,7 +392,6 @@ interface WriteArgs {
  */
 async function writeMemories(args: WriteArgs): Promise<void> {
   const { config, memory, context, userText, assistantText } = args;
-
   try {
     let candidates =
       config.memory.writeMode === 'explicit'
@@ -402,14 +401,20 @@ async function writeMemories(args: WriteArgs): Promise<void> {
             { user: userText, assistant: assistantText, project: context.projectName },
             config,
           );
-
+    
     if (candidates.length === 0) return;
     candidates = candidates.slice(0, config.memory.maxPerTurn);
-
+    
+    // Stamp auto-extracted notes with role: context and an auto-extracted tag
+    // so they can be distinguished from explicit saves and prioritized differently.
+    for (const candidate of candidates) {
+      candidate.role = candidate.role ?? 'context';
+      candidate.tags = [...(candidate.tags ?? []), 'auto-extracted'];
+    }
+    
     // The context was resolved before the turn; re-resolve so a chat created
     // inside a project on this very turn still lands in the right place.
     const fresh = await memory.resolveContext(context.userId, context.conversationId);
-
     for (const candidate of candidates) {
       await memory.save(fresh, candidate);
     }

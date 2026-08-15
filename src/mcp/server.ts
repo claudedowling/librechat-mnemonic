@@ -1,14 +1,11 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-
 import type { AppConfig } from '../config.js';
 import type { LibreChatStore } from '../librechat/mongo.js';
 import { logger } from '../logger.js';
 import type { MemoryService } from '../memory/service.js';
-
 /**
  * The explicit half of the integration.
  *
@@ -21,32 +18,25 @@ import type { MemoryService } from '../memory/service.js';
  * context taken from the same headers the proxy uses. That keeps it compatible
  * with LibreChat's request-scoped MCP connections.
  */
-
 export const SERVER_INSTRUCTIONS = `This server exposes the user's long-term memory vault (mnemonic), scoped to the current LibreChat project.
-
 Relevant memories are already injected into your context automatically. Use these tools when that is not enough:
 - search_memory when the user refers to something from a past conversation that is not in your context.
 - save_memory when the user asks you to remember something specific, or states a durable decision worth keeping.
 - update_memory or forget_memory when the user corrects or retracts something previously stored.
-
+- list_memory when you need to see what notes exist in the vault without searching for specific terms.
 Do not call save_memory for routine conversation. Automatic extraction already handles the ordinary case, and duplicate notes make recall worse.`;
-
 export interface McpDeps {
   config: AppConfig;
   store: LibreChatStore;
   memory: MemoryService;
 }
-
 function buildServer(deps: McpDeps, userId: string | null, conversationId: string | null): McpServer {
   const { config, store, memory } = deps;
-
   const server = new McpServer(
     { name: 'librechat-mnemonic', version: '0.1.0' },
     { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
-
   const context = () => memory.resolveContext(userId, conversationId);
-
   server.registerTool(
     'search_memory',
     {
@@ -81,7 +71,6 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       return { content: [{ type: 'text' as const, text }] };
     },
   );
-
   server.registerTool(
     'save_memory',
     {
@@ -95,16 +84,24 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
           .describe('Markdown body. Put the key fact in the first sentence. Maximum 8000 characters.'),
         tags: z.array(z.string()).optional().describe('Optional tags. Maximum 6 tags.'),
         lifecycle: z.enum(['temporary', 'permanent']).optional(),
+        role: z
+          .enum(['summary', 'decision', 'plan', 'context', 'reference', 'research', 'review'])
+          .optional()
+          .describe(
+            'Optional prioritization hint. Use "decision" for decisions, "reference" for durable specs, ' +
+              '"context" for background, "plan" for plans, "research" for findings, "review" for review notes, ' +
+              '"summary" for outcomes. If omitted, mnemonic infers a role from the note structure.',
+          ),
       },
     },
-    async ({ title, content, tags, lifecycle }) => {
+    async ({ title, content, tags, lifecycle, role }) => {
       const validationError = validateMemoryInput({ title, content, tags });
       if (validationError) {
         return { content: [{ type: 'text' as const, text: validationError }], isError: true };
       }
-      
+
       const ctx = await context();
-      const result = await memory.save(ctx, { title, content, tags, lifecycle });
+      const result = await memory.save(ctx, { title, content, tags, lifecycle, role });
       const text = result.saved
         ? `Saved as ${result.id}.`
         : result.reason === 'duplicate'
@@ -113,7 +110,6 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       return { content: [{ type: 'text' as const, text }], isError: !result.saved && result.reason === 'error' };
     },
   );
-
   server.registerTool(
     'update_memory',
     {
@@ -131,7 +127,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       if (validationError) {
         return { content: [{ type: 'text' as const, text: validationError }], isError: true };
       }
-      
+
       const ctx = await context();
       const ok = await memory.update(ctx, id, { title, content, tags });
       return {
@@ -140,7 +136,6 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       };
     },
   );
-
   server.registerTool(
     'forget_memory',
     {
@@ -157,7 +152,52 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       };
     },
   );
-
+  server.registerTool(
+    'list_memory',
+    {
+      title: 'List memory',
+      description:
+        'List notes in the vault with id, title, tags, lifecycle, and project. Use to see what exists without searching for specific terms.',
+      inputSchema: {
+        scope: z
+          .enum(['project', 'global', 'all'])
+          .optional()
+          .describe('Defaults to "all". Use "project" for only this project notes, "global" for unscoped.'),
+        tags: z.array(z.string()).optional().describe('Filter to notes with any of these tags.'),
+        limit: z.number().int().min(1).max(100).optional().describe('Maximum notes to return. Defaults to 50.'),
+      },
+    },
+    async ({ scope, tags, limit }) => {
+      const ctx = await context();
+      const result = await memory.list(ctx, { scope, tags });
+      const notes = Array.isArray(result) ? result : [];
+      const limited = limit ? notes.slice(0, limit) : notes.slice(0, 50);
+      if (limited.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No memories found.' }] };
+      }
+      const text = limited
+        .map((note: Record<string, unknown>) => {
+          const id = note.id ?? '';
+          const title = note.title ?? '';
+          const noteTags = Array.isArray(note.tags) ? note.tags.join(', ') : '';
+          const lifecycle = note.lifecycle ?? '';
+          const project = note.projectName ?? '';
+          const role = note.role ?? '';
+          return [
+            `- **${title}**`,
+            `  id: \`${id}\``,
+            project ? `  project: ${project}` : '',
+            role ? `  role: ${role}` : '',
+            noteTags ? `  tags: ${noteTags}` : '',
+            lifecycle ? `  lifecycle: ${lifecycle}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n');
+        })
+        .join('\n\n');
+      return { content: [{ type: 'text' as const, text }] };
+    },
+  );
   server.registerTool(
     'memory_status',
     {
@@ -169,13 +209,16 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
     async () => {
       const ctx = await context();
       const setting = await store.getMemorySetting(userId, conversationId);
+      const projectLine = ctx.projectName
+        ? `Project: **${ctx.projectName}**`
+        : 'Project: _none_ (MCP tool calls may not resolve project context outside chat turns; the automatic path works correctly during chat)';
       return {
         content: [
           {
             type: 'text' as const,
             text: [
               `Automatic memory: ${setting.enabled ? 'on' : 'off'} (${setting.source})`,
-              `Project: ${ctx.projectName ?? 'none'}`,
+              projectLine,
               `Write scope: ${config.mnemonic.writeScope}, recall scope: ${config.mnemonic.recallScope}`,
             ].join('\n'),
           },
@@ -183,7 +226,6 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       };
     },
   );
-
   server.registerTool(
     'set_memory_enabled',
     {
@@ -207,25 +249,20 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       };
     },
   );
-
   return server;
 }
-
 export function createMcpHandler(deps: McpDeps) {
   return async function handle(req: Request, res: Response): Promise<void> {
     const userHeader = req.headers[deps.config.librechat.userHeader];
     const conversationHeader = req.headers[deps.config.librechat.conversationHeader];
     const userId = firstHeader(userHeader);
     const conversationId = firstHeader(conversationHeader);
-
     const server = buildServer(deps, userId, conversationId);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-
     res.on('close', () => {
       void transport.close().catch(() => undefined);
       void server.close().catch(() => undefined);
     });
-
     try {
       await server.connect(transport);
       const body = Buffer.isBuffer(req.body) ? safeJson(req.body) : req.body;
@@ -242,7 +279,6 @@ export function createMcpHandler(deps: McpDeps) {
     }
   };
 }
-
 function validateMemoryInput(input: {
   title?: string;
   content?: string;
@@ -259,13 +295,11 @@ function validateMemoryInput(input: {
   }
   return null;
 }
-
 function firstHeader(value: string | string[] | undefined): string | null {
   const raw = Array.isArray(value) ? value[0] : value;
   const trimmed = typeof raw === 'string' ? raw.trim() : '';
   return trimmed ? trimmed : null;
 }
-
 function safeJson(buffer: Buffer): unknown {
   try {
     return JSON.parse(buffer.toString('utf8'));
