@@ -1,4 +1,4 @@
-import { MongoClient, type Collection, type Db } from 'mongodb';
+import { MongoClient, ObjectId, type Collection, type Db } from 'mongodb';
 
 import type { AppConfig } from '../config.js';
 import { logger } from '../logger.js';
@@ -237,17 +237,10 @@ export class LibreChatStore {
 
 /**
  * `chatProjectId` is stored on the conversation as a string. Mongo needs an
- * ObjectId to match `_id`. Import lazily so tests can run without the driver
- * resolving BSON quirks.
+ * ObjectId to match `_id` in the `chatprojects` collection.
  */
 function toObjectIdLike(id: string): unknown {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { ObjectId } = require('mongodb') as typeof import('mongodb');
-    return ObjectId.isValid(id) ? new ObjectId(id) : id;
-  } catch {
-    return id;
-  }
+  return ObjectId.isValid(id) ? new ObjectId(id) : id;
 }
 
 function delay(ms: number): Promise<void> {
