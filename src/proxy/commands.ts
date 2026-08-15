@@ -138,7 +138,11 @@ export async function runCommand(
     }
     case 'list': {
       const result = await memory.list(context, { scope: 'all' });
-      const notes = Array.isArray(result) ? result : [];
+      const notes = Array.isArray(result)
+        ? result
+        : Array.isArray((result as { notes?: unknown[] })?.notes)
+          ? (result as { notes: unknown[] }).notes
+          : [];
       const limited = notes.slice(0, 20);
       if (limited.length === 0) return { reply: 'No memories found.' };
       return {
