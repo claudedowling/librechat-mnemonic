@@ -192,8 +192,8 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
             lifecycle ? `  lifecycle: ${lifecycle}` : '',
           ]
             .filter(Boolean)
-            .join('\n'),
-        ])
+            .join('\n');
+        })
         .join('\n\n');
       return { content: [{ type: 'text' as const, text }] };
     },
