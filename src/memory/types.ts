@@ -61,4 +61,6 @@ export interface MemoryCandidate {
   content: string;
   tags?: string[];
   lifecycle?: 'temporary' | 'permanent';
+  /** Optional mnemonic role hint: summary, decision, plan, context, reference, research, review. */
+  role?: string;
 }
