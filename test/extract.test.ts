@@ -34,7 +34,7 @@ describe('parseCandidates', () => {
   it('parses a clean response', () => {
     const raw = '{"memories":[{"title":"T","content":"C","tags":["a"],"lifecycle":"permanent"}]}';
     expect(parseCandidates(raw, 3)).toEqual([
-      { title: 'T', content: 'C', tags: ['a'], lifecycle: 'permanent' },
+      { title: 'T', content: 'C', tags: ['a'], lifecycle: 'permanent', role: 'context' },
     ]);
   });
 
@@ -59,7 +59,7 @@ describe('parseCandidates', () => {
     const raw =
       '{"memories":[{"title":"","content":"C"},{"title":"T"},{"title":"T2","content":"C2"}]}';
     expect(parseCandidates(raw, 5)).toEqual([
-      { title: 'T2', content: 'C2', tags: [], lifecycle: 'permanent' },
+      { title: 'T2', content: 'C2', tags: [], lifecycle: 'permanent', role: 'context' },
     ]);
   });
 
@@ -97,5 +97,19 @@ describe('parseCandidates', () => {
   it('ignores non-string tags rather than passing them to mnemonic', () => {
     const raw = '{"memories":[{"title":"T","content":"C","tags":["ok",5,null,"  "]}]}';
     expect(parseCandidates(raw, 3)[0]?.tags).toEqual(['ok']);
+  });
+
+  it('defaults role to context and honours valid roles', () => {
+    expect(parseCandidates('{"memories":[{"title":"T","content":"C"}]}', 3)[0]?.role).toBe(
+      'context',
+    );
+    expect(
+      parseCandidates('{"memories":[{"title":"T","content":"C","role":"decision"}]}', 3)[0]?.role,
+    ).toBe('decision');
+  });
+
+  it('falls back to context for invalid roles', () => {
+    const raw = '{"memories":[{"title":"T","content":"C","role":"bogus"}]}';
+    expect(parseCandidates(raw, 3)[0]?.role).toBe('context');
   });
 });
