@@ -89,22 +89,26 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       description:
         'Store a durable note in the memory vault, stamped with the current project. Duplicates are detected and skipped.',
       inputSchema: {
-        title: z.string().max(200).describe('Specific, retrieval-friendly title.'),
+        title: z.string().describe('Specific, retrieval-friendly title. Maximum 200 characters.'),
         content: z
           .string()
-          .max(8000)
-          .describe('Markdown body. Put the key fact in the first sentence.'),
-        tags: z.array(z.string()).max(6).optional(),
+          .describe('Markdown body. Put the key fact in the first sentence. Maximum 8000 characters.'),
+        tags: z.array(z.string()).optional().describe('Optional tags. Maximum 6 tags.'),
         lifecycle: z.enum(['temporary', 'permanent']).optional(),
       },
     },
     async ({ title, content, tags, lifecycle }) => {
+      const validationError = validateMemoryInput({ title, content, tags });
+      if (validationError) {
+        return { content: [{ type: 'text' as const, text: validationError }], isError: true };
+      }
+      
       const ctx = await context();
       const result = await memory.save(ctx, { title, content, tags, lifecycle });
       const text = result.saved
         ? `Saved as ${result.id}.`
         : result.reason === 'duplicate'
-          ? `Not saved: an equivalent memory already exists (${result.id}).`
+          ? `Not saved: equivalent memory already exists.\n  id: ${result.id}\n  title: "${result.duplicateTitle}"\nUse update_memory to correct it, or search_memory to read it.`
           : `Not saved: ${result.reason ?? 'unknown error'}.`;
       return { content: [{ type: 'text' as const, text }], isError: !result.saved && result.reason === 'error' };
     },
@@ -117,12 +121,17 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       description: 'Correct an existing memory in place. Prefer this over saving a near-duplicate.',
       inputSchema: {
         id: z.string(),
-        title: z.string().max(200).optional(),
-        content: z.string().max(8000).optional(),
-        tags: z.array(z.string()).max(6).optional(),
+        title: z.string().optional().describe('Maximum 200 characters.'),
+        content: z.string().optional().describe('Maximum 8000 characters.'),
+        tags: z.array(z.string()).optional().describe('Maximum 6 tags.'),
       },
     },
     async ({ id, title, content, tags }) => {
+      const validationError = validateMemoryInput({ title, content, tags });
+      if (validationError) {
+        return { content: [{ type: 'text' as const, text: validationError }], isError: true };
+      }
+      
       const ctx = await context();
       const ok = await memory.update(ctx, id, { title, content, tags });
       return {
@@ -232,6 +241,23 @@ export function createMcpHandler(deps: McpDeps) {
       }
     }
   };
+}
+
+function validateMemoryInput(input: {
+  title?: string;
+  content?: string;
+  tags?: string[];? `Not saved: equivalent memory already exists.\n  id: ${result.id}\n  title: "${result.duplicateTitle}"\nUse update_memory to correct it, or search_memory to read it.`
+}): string | null {
+  if (input.title != null && input.title.length > 200) {
+    return `title exceeds 200 character limit (got ${input.title.length}). Shorten the title.`;
+  }
+  if (input.content != null && input.content.length > 8000) {
+    return `content exceeds 8000 character limit (got ${input.content.length}). Split the note or trim content.`;
+  }
+  if (input.tags != null && input.tags.length > 6) {
+    return `tags exceeds maximum of 6 (got ${input.tags.length}). Remove some tags.`;
+  }
+  return null;
 }
 
 function firstHeader(value: string | string[] | undefined): string | null {
