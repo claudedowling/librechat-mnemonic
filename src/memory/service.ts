@@ -132,14 +132,14 @@ export class MemoryService {
   async save(
     context: MemoryContext,
     candidate: MemoryCandidate,
-  ): Promise<{ saved: boolean; id?: string; reason?: string }> {
+  ): Promise<{ saved: boolean; id?: string; reason?: string; duplicateTitle?: string }> {
     if (!context.cwd && this.config.memory.projectless === 'off') {
       return { saved: false, reason: 'projectless-writes-disabled' };
     }
 
     const duplicate = await this.findDuplicate(context, candidate);
     if (duplicate) {
-      return { saved: false, id: duplicate.id, reason: 'duplicate' };
+      return { saved: false, id: duplicate.id, reason: 'duplicate', duplicateTitle: duplicate.title };
     }
 
     const tags = dedupeTags([...(candidate.tags ?? []), this.config.mnemonic.tag]);
