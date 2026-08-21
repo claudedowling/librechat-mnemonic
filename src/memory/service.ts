@@ -126,8 +126,7 @@ export class MemoryService {
   /**
    * Store a memory, skipping anything the vault already knows.
    *
-   * `checkedForExisting: true` is honest here: we run the dedupe recall right
-   * above the write.
+   * `checkedForExisting: true` is honest here: we run the dedupe recall right above the write.
    */
   async save(
     context: MemoryContext,
@@ -137,13 +136,10 @@ export class MemoryService {
       return { saved: false, reason: 'projectless-writes-disabled' };
     }
   
-    const duplicates = await this.findDuplicates(context, candidate);
+    let duplicates = await this.findDuplicates(context, candidate);
     const candidateIsAutoExtracted = candidate.tags?.includes('auto-extracted') ?? false;
   
-    // Explicit saves replace auto-extracted fragments that cover the same ground.
-    // An explicit note may cover multiple points that were each auto-extracted
-    // separately during the conversation, so forget ALL matching auto-extracted
-    // fragments, not just the first.
+    // Forget any auto-extracted duplicates that a manually saved note should replace
     if (!candidateIsAutoExtracted) {
       const autoExtracted = duplicates.filter(
         (dup) => dup.tags?.includes('auto-extracted') ?? false,
@@ -157,15 +153,15 @@ export class MemoryService {
           'replaced auto-extracted fragments with explicit save',
         );
       }
+      // Remove forgotten duplicates so only real blockers remain.
+      duplicates = duplicates.filter(
+        (dup) => !(dup.tags?.includes('auto-extracted') ?? false),
+      );
     }
   
-    // After forgetting auto-extracted fragments, block only if a non-auto-extracted
-    // duplicate remains (a real deliberate duplicate).
-    const remaining = duplicates.filter(
-      (dup) => !(dup.tags?.includes('auto-extracted') ?? false),
-    );
-    if (remaining.length > 0) {
-      return { saved: false, id: remaining[0]!.id, reason: 'duplicate', duplicateTitle: remaining[0]!.title };
+    // Block if any duplicates remain
+    if (duplicates.length > 0) {
+      return { saved: false, id: duplicates[0]!.id, reason: 'duplicate', duplicateTitle: duplicates[0]!.title };
     }
   
     const tags = dedupeTags([...(candidate.tags ?? []), this.config.mnemonic.tag]);
