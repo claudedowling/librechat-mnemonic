@@ -223,7 +223,19 @@ export class MemoryService {
       return [];
     }
   }
-
+  
+  async forget(context: MemoryContext, id: string): Promise<boolean> {
+    const args: Record<string, unknown> = { id };
+    if (context.cwd) args.cwd = context.cwd;
+    try {
+      await this.mnemonic.call('forget', args);
+      return true;
+    } catch (error) {
+      logger.error({ err: error, id }, 'forget failed');
+      return false;
+    }
+  }
+  
   async update(
     context: MemoryContext,
     id: string,
