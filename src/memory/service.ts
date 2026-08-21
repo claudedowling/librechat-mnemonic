@@ -126,8 +126,7 @@ export class MemoryService {
   /**
    * Store a memory, skipping anything the vault already knows.
    *
-   * `checkedForExisting: true` is honest here: we run the dedupe recall right
-   * above the write.
+   * `checkedForExisting: true` is honest here: we run the dedupe recall right above the write.
    */
   async save(
     context: MemoryContext,
@@ -136,12 +135,35 @@ export class MemoryService {
     if (!context.cwd && this.config.memory.projectless === 'off') {
       return { saved: false, reason: 'projectless-writes-disabled' };
     }
-
-    const duplicate = await this.findDuplicate(context, candidate);
-    if (duplicate) {
-      return { saved: false, id: duplicate.id, reason: 'duplicate', duplicateTitle: duplicate.title };
+  
+    let duplicates = await this.findDuplicates(context, candidate);
+    const candidateIsAutoExtracted = candidate.tags?.includes('auto-extracted') ?? false;
+  
+    // Forget any auto-extracted duplicates that a manually saved note should replace
+    if (!candidateIsAutoExtracted) {
+      const autoExtracted = duplicates.filter(
+        (dup) => dup.tags?.includes('auto-extracted') ?? false,
+      );
+      for (const dup of autoExtracted) {
+        await this.forget(context, dup.id);
+      }
+      if (autoExtracted.length > 0) {
+        logger.info(
+          { count: autoExtracted.length, ids: autoExtracted.map((d) => d.id), title: candidate.title },
+          'replaced auto-extracted fragments with explicit save',
+        );
+      }
+      // Remove forgotten duplicates so only real blockers remain.
+      duplicates = duplicates.filter(
+        (dup) => !(dup.tags?.includes('auto-extracted') ?? false),
+      );
     }
-
+  
+    // Block if any duplicates remain
+    if (duplicates.length > 0) {
+      return { saved: false, id: duplicates[0]!.id, reason: 'duplicate', duplicateTitle: duplicates[0]!.title };
+    }
+  
     const tags = dedupeTags([...(candidate.tags ?? []), this.config.mnemonic.tag]);
 
     const args: Record<string, unknown> = {
@@ -174,34 +196,30 @@ export class MemoryService {
     }
   }
 
-  private async findDuplicate(
+  private async findDuplicates(
     context: MemoryContext,
     candidate: MemoryCandidate,
-  ): Promise<RecallResultItem | null> {
+  ): Promise<RecallResultItem[]> {
     const query = `${candidate.title}\n${candidate.content}`.slice(0, 800);
     const args: Record<string, unknown> = {
       query,
-      limit: 3,
+      limit: 10,  // was 3 — an explicit save may overlap multiple fragments
       scope: context.cwd ? 'all' : 'global',
       minSimilarity: this.config.mnemonic.minSimilarity,
     };
     if (context.cwd) args.cwd = context.cwd;
-
+  
     try {
       const result = await this.mnemonic.call<RecallResponse>('recall', args);
       const results = result.structured?.results ?? [];
       const threshold = this.config.memory.dedupeThreshold;
-      return (
-        results.find((item) => (item.boosted ?? item.score ?? 0) >= threshold) ?? null
-      );
+      return results.filter((item) => (item.boosted ?? item.score ?? 0) >= threshold);
     } catch (error) {
-      // A failed dedupe check must not block the write; a duplicate note is a
-      // far smaller problem than a lost one.
       logger.warn({ err: error }, 'dedupe check failed; saving anyway');
-      return null;
+      return [];
     }
   }
-
+  
   async forget(context: MemoryContext, id: string): Promise<boolean> {
     const args: Record<string, unknown> = { id };
     if (context.cwd) args.cwd = context.cwd;
@@ -213,7 +231,7 @@ export class MemoryService {
       return false;
     }
   }
-
+  
   async update(
     context: MemoryContext,
     id: string,
